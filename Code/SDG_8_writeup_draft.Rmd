@@ -28,24 +28,6 @@ dir <- here()
 ```
 
 
-```{r load}
-
-
-
-#read in map data
-load(paste0(dir, '/SDG_8/Data/maps.Rdata'))
-standard_crop_wintri <- function() {
-  l <- list(
-    left=-12000000, right=16396891,
-    top=9400000, bottom=-6500000
-  )
-  l$xlim <- c(l$left, l$right)
-  l$ylim <- c(l$bottom, l$top)
-  l
-}
-
-
-```
 
 
 # SDG 8 - Promote sustained, inclusive and sustainable economic growth, full and productive employment and decent work for all
@@ -551,6 +533,26 @@ weo_gdp_change_df <- weo_df %>%
 
 summary(weo_gdp_change_df$net_output_lost_share2019)
 ```
+
+```{r mapload, eval=FALSE, include=FALSE}
+
+
+
+#read in map data
+load(paste0(dir, '/SDG_8/Data/maps.Rdata'))
+standard_crop_wintri <- function() {
+  l <- list(
+    left=-12000000, right=16396891,
+    top=9400000, bottom=-6500000
+  )
+  l$xlim <- c(l$left, l$right)
+  l$ylim <- c(l$bottom, l$top)
+  l
+}
+
+
+```
+
 
 ```{r map_output_lost, eval=FALSE, fig.height=, fig.width=11, include=FALSE}
 
