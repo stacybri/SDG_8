@@ -1,0 +1,610 @@
+---
+title: "SDG 8 Writeup"
+author: "Brian Stacy"
+date: "12/7/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 6, fig.path = "plots/", dev = c("png"), dpi=500)
+
+library(tidyverse)
+library(wbstats)
+library(here)
+library(zoo)
+library(plotly)
+library(readxl)
+library(fixest)
+library(broom)
+library(ggthemes)
+library(ggrepel)
+library(readxl)
+library(WDI)
+
+
+dir <- here()
+
+
+```
+
+
+```{r load}
+
+
+
+#read in map data
+load(paste0(dir, '/SDG_8/Data/maps.Rdata'))
+standard_crop_wintri <- function() {
+  l <- list(
+    left=-12000000, right=16396891,
+    top=9400000, bottom=-6500000
+  )
+  l$xlim <- c(l$left, l$right)
+  l$ylim <- c(l$bottom, l$top)
+  l
+}
+
+
+```
+
+
+# SDG 8 - Promote sustained, inclusive and sustainable economic growth, full and productive employment and decent work for all
+
+Here is the three sentence summary of the chapter.  COVID has had big impacts on economic growth for many countries. Are countries expected to quickly bounce back?  If so, will the growth be broadly shared?
+
+COVID-19 has been a major disruption to GDP growth.  This chapter will discuss some of the losses in GDP due to the COVID-19 pandemic.  It will do so by comparing GDP in 2019 (the year before the pandemic) to GDP in 2020 and 2021.  
+
+The chapter will then discuss how projections of future economic output have been affected as well.  Many countries appear to have permanent long term damage to their economies.  Comparing GDP projections from January 2020 (COVID-19 wasn't even mentioned as a factor in the January 2020 Global Economic Prospects report) to GDP projections from January 2022, many countries are expected to have less economic output than projected in January 2020.
+
+Finally, a discussion will be given on the relationships between GDP and economic inequality.  Since COVID, many countries have focused on "Building Back Better", including a commitment that economic gains are more broadly shared.  In the closing section of the chapter, historic episodes of economic growth will be evaluated and compared to the level of inequality seen in the country (as measured by the Gini coefficient).  In some countries that have seen economic growth, there have been periods of rising inequality.  In others, economic growth has led to decreased inequality.  It would be nice to pair these empirical with a discussion of some cases of countries that have done better at promoting broadly shared econoomic growth and some reasons for why they were successful.
+
+
+```{r gepdata}
+
+#This code chunk will pull from three sources.  First, GDP data from 2017 to 2020 will be pulled from the WDI.  Next, projected GDP will be pulled from the World Bank's Global Economic Prospects.   
+
+#read in  country metadata from WDI
+countries <- wbstats::wb_countries()
+
+#fetch GDP data from WDI
+gdp_df <- WDI(
+  country = 'all',
+  indicator='NY.GDP.PCAP.CD',
+  start=2017,
+  end=2020,
+  extra=TRUE
+) %>%
+  filter(region!="Aggregates") %>%
+  rename(date=year)
+
+
+
+# read in GDP data from January 2022 Global Economic Prospects
+#https://www.worldbank.org/en/publication/global-economic-prospects
+gep_2022 <- read_csv(file=paste0(dir,  "/SDG_8/Data/Global-Economic-Prospects-January-2022-GDP-growth-data.csv")) %>%
+  rename(iso3c=`Country Code`) 
+
+# read in GDP data from January 2020 Global Economic Prospects
+#https://www.worldbank.org/en/publication/global-economic-prospects
+gep_2020 <- read_excel(path=paste0(dir,  "/SDG_8/Data/Global-Economic-Prospects-January-2020-GDP-growth-data.xlsx"), sheet="Statistical Appendix", skip=3) %>%
+  rename(country=`Real GDP growth (%)`) %>%
+  mutate(country=str_remove_all(country, '[0-9]'),
+         country=trimws(country, whitespace = ",")) %>%
+  mutate(country=case_when(
+    country=="Russia" ~ "Russian Federation",
+    country=="Egypt" ~ "Egypt, Arab Rep.",
+    country=="Iran" ~ "Iran, Islamic Rep.",
+    country=="Côte d'Ivoire" ~ "Cote d'Ivoire",
+    TRUE ~ country
+    
+  )) %>%
+  left_join(countries) %>%
+  select(iso3c, `2020f`, `2021f`, `2022f`) %>%
+  mutate(`2023f`=`2022f`) #impute 2023 forecast with 2022 forecast
+
+
+
+```
+
+
+```{r gep_cleaning}
+
+#now that files have been loaded.  Clean then and create GDP per capita
+
+#Now append
+span <- c(2021:2023)
+
+gdp_fut_df <- bind_rows(replicate(length(span), wbstats::wbcountries(), simplify = FALSE), .id='date') %>%
+  mutate(date=as.numeric(date)+span[1]-1) %>%
+  filter(region!="Aggregates")
+
+#Now bring all data together to get data where each row is a country and year.  Years span 2017 to 2023.  Columns include gdp per capita with projections from January 2022 and January 2020 as a comparison to before COVID.
+gep_df<- gdp_df %>%
+  bind_rows(gdp_fut_df) %>%
+  left_join(gep_2022) %>%
+  left_join(gep_2020) %>%
+  group_by(country) %>%
+  arrange(date) %>%
+  mutate(gdp_pcap=if_else(date<=2020, NY.GDP.PCAP.CD, as.numeric(NA)), #sequentially build up the projections for each year
+         gdp_pcap=if_else(date==2021, lag(gdp_pcap)*(1+`2021`/100), gdp_pcap),
+         gdp_pcap=if_else(date==2022, lag(gdp_pcap)*(1+`2022`/100), gdp_pcap),
+         gdp_pcap=if_else(date==2023, lag(gdp_pcap)*(1+`2023`/100), gdp_pcap)) %>%
+  mutate(gdp_pcap_forc20=if_else(date<2020, NY.GDP.PCAP.CD, as.numeric(NA)), #sequentially build up the projections from January 2020 for each year
+         gdp_pcap_forc20=if_else(date==2020, lag(gdp_pcap_forc20)*(1+`2020f`/100), gdp_pcap_forc20),
+         gdp_pcap_forc20=if_else(date==2021, lag(gdp_pcap_forc20)*(1+`2021f`/100), gdp_pcap_forc20),
+         gdp_pcap_forc20=if_else(date==2022, lag(gdp_pcap_forc20)*(1+`2022f`/100), gdp_pcap_forc20),
+         gdp_pcap_forc20=if_else(date==2023, lag(gdp_pcap_forc20)*(1+`2023f`/100), gdp_pcap_forc20)) %>%  
+  select(country, iso3c, date, NY.GDP.PCAP.CD, gdp_pcap, gdp_pcap_forc20, everything())
+  
+  
+```
+
+
+# Cumulative losses in GDP
+
+Next show GDP growth rates for regions for 2019 to 2023.  The 2021 is the estimated value according the World Bank's Global Economic Prospects, and the values for 2022 and 2023 are projections.
+
+Growth was generally very bad in 2020.  Bounced back to some extent in 2021 and in future.
+
+```{r gdplosses}
+
+gdp_loss_df <- gep_2022 %>%
+  filter(`Country Name` %in% c('East Asia and Pacific', 'Europe and Central Asia', 'Latin America and the Caribbean', 'Middle East and North Africa', 'South Asia','Sub-Saharan Africa', 'World (WBG members)')) %>% #keep just regions and world total 
+  pivot_longer(
+    cols=c('2019','2020','2021','2022','2023'),
+    values_to='GDP Growth',
+    names_to='Year'
+  ) %>%
+  mutate(Year=as.numeric(Year),
+         neg_growth=if_else(`GDP Growth`<0,TRUE, FALSE)) 
+
+#World Plot
+gdp_loss_df %>%
+  filter(`Country Name`=="World (WBG members)") %>%
+  ggplot( aes(x=Year, y=`GDP Growth`, fill=neg_growth)) +
+    facet_wrap(~`Country Name`) +
+    geom_col() +
+    scale_fill_manual(
+      values=c('TRUE' = '#ae2012',
+               'FALSE'= '#005f73')
+    ) +
+    theme_minimal() +
+    theme(legend.position = 'none') +
+    expand_limits(y=c(-8,8))
+
+#Region Plot
+gdp_loss_df %>%
+  filter(`Country Name`!="World (WBG members)") %>%
+  ggplot( aes(x=Year, y=`GDP Growth`, fill=neg_growth)) +
+    facet_wrap(~`Country Name`) +
+    geom_col() +
+    scale_fill_manual(
+      values=c('TRUE' = '#ae2012',
+               'FALSE'= '#005f73')
+    ) +
+    theme_minimal() +
+    theme(legend.position = 'none') +
+    expand_limits(y=c(-8,8))
+
+```
+
+
+## Country Losses
+
+However, just because GDP has bounced back doesn't mean damage wasn't done.  When we compare how fast we expected GDP to grow prior to COVID and compare to projections today, it is possible to see major damage.  In the graphs below, the solid lines are the projections reflecting COVID using the January 2022 Global Economic Prospects, while the red lines are where countries were expected to be before COVID.
+
+Below shows some plots for a mostly randomly selected list of countries.  India and Indonesia are important examples to potentially highlight.  They are the 2nd and 4th most populated countries in the world, representing large population.  The graphs show very large gaps between expected GDP starting in January 2020 to current projections in January 2022, suggesting permanent damage.   Egypt & United States are expected to surpass GDP projections from January 2020, so they had strong recovery.  China is nearly matching January 2020 projections, so not much long term impact.
+
+```{r}
+covid_counterfactual_plotter <- function( iso) {
+  
+  
+  temp_df <- gep_df %>%
+    filter(iso3c==iso) 
+
+  country=temp_df$country
+  
+  p<- temp_df %>%
+    ggplot(aes(x=date, y=gdp_pcap)) +
+    geom_line() +
+    geom_line(aes(y=gdp_pcap_forc20), linetype='dotted', color='red') +
+    theme_bw() +
+    xlab('Year') +
+    ylab('GDP per capita, current prices (U.S. dollars)') +
+    labs(title=paste0("COVID impacts on GDP per capita for ", country),
+         caption='Data from World Bank Global Economic Prospects (GEP).  Red line shows projections based on the January 2029 GEP.')
+  
+  p
+}
+# for (iso in weo_gdp_df_postcovid$iso3c) {
+#   print(covid_counterfactual_plotter(iso))
+# }
+
+p1 <- covid_counterfactual_plotter("ARM") 
+p1
+
+p2 <-covid_counterfactual_plotter("BGD")
+p2
+
+p15 <- covid_counterfactual_plotter("BLR")
+p15
+
+p3 <-covid_counterfactual_plotter("BWA")
+p3 
+
+
+p4 <- covid_counterfactual_plotter("CHN")
+p4
+
+p5 <-covid_counterfactual_plotter("EGY")
+p5
+
+p6 <- covid_counterfactual_plotter("HND")
+p6
+
+p16 <- covid_counterfactual_plotter("ROU")
+p16 
+
+p7 <- covid_counterfactual_plotter("IDN")
+p7
+
+p8 <- covid_counterfactual_plotter("IND")
+p8
+
+p9 <- covid_counterfactual_plotter("IRQ")
+p9
+
+p10 <- covid_counterfactual_plotter("MLI")
+p10
+
+p11 <- covid_counterfactual_plotter("RWA")
+p11
+
+p12 <-covid_counterfactual_plotter("URY")
+p12
+
+p13 <-covid_counterfactual_plotter("USA")
+p13
+
+p14 <-covid_counterfactual_plotter("VNM")
+p14
+
+```
+
+
+# Tradeoff GDP and GINI
+
+```{r gni_gini}
+
+library(WDI)
+
+#create a new data frame containing 5 year average of gdp and gini to eliminate volatility
+gini_gdp_df <- WDI(
+  indicator = c('NY.GNP.PCAP.PP.KD','SI.POV.GINI','SP.POP.TOTL'),
+  start=1980,
+  end=2019,
+  extra=TRUE
+  ) %>% 
+  dplyr::arrange(iso3c,-year) %>%
+  filter(region!="Aggregates") %>%
+  group_by(country, iso3c) %>%
+  fill(NY.GNP.PCAP.PP.KD, SI.POV.GINI, .direction="downup") %>%
+  mutate(
+    date=year,
+    gni_pcap_3yr=rollmean(NY.GNP.PCAP.PP.KD, 3, fill=NA, align='left'),
+    gni_pcap_5yr=rollmean(NY.GNP.PCAP.PP.KD, 5, fill=NA, align='left'),
+    gini_3yr=rollmean(SI.POV.GINI, 3, fill=NA, align='left'),
+    gini_5yr=rollmean(SI.POV.GINI, 5, fill=NA, align='left')
+  )
+
+```
+
+
+```{r gni_gini_chg}
+
+#show time series for specific countries from 1980 to 2019
+
+
+gni_gini_plotter <- function( iso) {
+  
+  
+  temp_df <- gini_gdp_df %>%
+    filter(iso3c==iso) 
+  
+  country=temp_df$country
+  
+  p<- temp_df %>%
+    ggplot(aes(x=NY.GNP.PCAP.PP.KD, y=SI.POV.GINI)) +
+    geom_point() +
+    geom_text(aes(label=date), position=position_jitter(width=1,height=1), check_overlap = TRUE) + 
+    theme_bw() +
+    xlab('GNI per capita, PPP (constant 2017 international $)') +
+    ylab('Gini index (World Bank estimate)') +
+    labs(title=paste0("Relationship between GNI per capita and Gini index for  ", country),
+         caption='Data from WDI')
+  
+  p
+  
+  p
+}
+
+
+# for (iso in weo_gdp_df_postcovid$iso3c) {
+#   print(covid_counterfactual_plotter(iso))
+# }
+
+  
+```
+
+One case where inequality did increase as economic output increased is China.  Looking at the lower left quadrant of the graph, you can find GDP and Gini coefficients starting in 1980. For China, both GDP per capita and Gini were low compared to later values.  
+
+```{r china}
+gni_gini_plotter("CHN")
+```
+
+
+```{r}
+
+p1 <- gni_gini_plotter("ARM") 
+p1
+
+p2 <-gni_gini_plotter("BGD")
+p2
+
+p15 <- gni_gini_plotter("BLR")
+p15
+
+p3 <-gni_gini_plotter("BWA")
+p3 
+
+
+p4 <- gni_gini_plotter("CHN")
+p4
+
+p5 <-gni_gini_plotter("EGY")
+p5
+
+p6 <- gni_gini_plotter("HND")
+p6
+
+p16 <- gni_gini_plotter("ROU")
+p16 
+
+p7 <- gni_gini_plotter("IDN")
+p7
+
+p8 <- gni_gini_plotter("IND")
+p8
+
+p9 <- gni_gini_plotter("IRQ")
+p9
+
+p10 <- gni_gini_plotter("MLI")
+p10
+
+p11 <- gni_gini_plotter("RWA")
+p11
+
+p12 <-gni_gini_plotter("URY")
+p12
+
+p13 <-gni_gini_plotter("USA")
+p13
+
+p14 <-gni_gini_plotter("VNM")
+p14  
+```
+
+
+## Extra code
+
+Feel free to ignore this section. This contains some code using the IMF's WEO data, as an alternative source.  Not needed most likely, but keeping just in case we change our minds.
+
+```{r eval=FALSE, include=FALSE}
+
+#load useful info from WDI
+databank_indicators <- wb_indicators()
+
+wdi_indicators <- databank_indicators %>% 
+  filter(source_id==2)
+
+# # WEO Query for Oct 2019 data
+# https://www.imf.org/imf/weodatabase/downloadreport?c=512,914,612,614,311,213,911,314,193,122,912,313,419,513,316,913,124,339,638,514,218,963,616,223,516,918,748,618,624,522,622,156,626,628,228,924,233,632,636,634,238,662,960,423,935,128,611,321,243,248,469,253,642,643,939,734,644,819,172,132,646,648,915,134,652,174,328,258,656,654,336,263,268,532,944,176,534,536,429,433,178,436,136,343,158,439,916,664,826,542,967,443,917,544,941,446,666,668,672,946,137,546,674,676,548,556,678,181,867,682,684,273,868,921,948,943,686,688,518,728,836,558,138,196,278,692,694,962,142,449,564,565,283,853,288,293,566,964,182,359,453,968,922,714,862,135,716,456,722,942,718,724,576,936,961,813,726,199,733,184,524,361,362,364,732,366,144,146,463,528,923,738,578,537,742,866,369,744,186,925,869,746,926,466,112,111,298,927,846,299,582,474,754,698,&s=NGDPRPPPPC,&sy=2010&ey=2024&ssm=0&scsm=1&scc=0&ssd=1&ssc=0&sic=1&sort=country&ds=.&br=1&wsid=b7c5f2a0-f1f8-4a42-aad7-8fbb5f3df87f
+
+
+weo_oct19_df <- read_csv(file=paste0(dir, "/SDG_8/Data/WEO_Data_Oct2019.csv"))
+
+# WEO query for Oct 2021
+# https://www.imf.org/en/Publications/WEO/weo-database/2021/October/weo-report?c=512,914,612,171,614,311,213,911,314,193,122,912,313,419,513,316,913,124,339,638,514,218,963,616,223,516,918,748,618,624,522,622,156,626,628,228,924,233,632,636,634,238,662,960,423,935,128,611,321,243,248,469,253,642,643,939,734,644,819,172,132,646,648,915,134,652,174,328,258,656,654,336,263,268,532,944,176,534,536,429,433,178,436,136,343,158,439,916,664,826,542,967,443,917,544,941,446,666,668,672,946,137,546,674,676,548,556,678,181,867,682,684,273,868,921,948,943,686,688,518,728,836,558,138,196,278,692,694,962,142,449,564,565,283,853,288,293,566,964,182,359,453,968,922,714,862,135,716,456,722,942,718,724,576,936,961,813,726,199,733,184,524,361,362,364,732,366,144,146,463,528,923,738,578,537,742,866,369,744,186,925,869,746,926,466,112,111,298,927,846,299,582,487,474,754,698,&s=NGDPRPPPPC,NGDPDPC,NGAP_NPGDP,&sy=2010&ey=2026&ssm=0&scsm=1&scc=0&ssd=1&ssc=0&sic=1&sort=country&ds=.&br=1
+
+# load WEO data from IMF.  Data pulled on 2021-12-07
+weo_df <- read_csv(file=paste0(dir, "/SDG_8/Data/WEO_Data_20211207.csv"))
+
+## Now get a linear trend pre-covid to see how countries compare.
+
+#split data into post covid (after 2019) and pre covid
+weo_gdp_df_postcovid <- weo_gdp_df %>%
+  #filter(between(date,2020,2026)) %>%
+  group_by(iso3c) %>%
+  nest() %>%
+  rename(post_covid=data)
+
+weo_gdp_df_precovid <- weo_gdp_df %>%
+  filter(between(date,2010,2019)) %>%
+  group_by(iso3c) %>%
+  nest() 
+
+#create counterfactural dataset with linear predictions of gdp per cap based on 2010-19 data
+weo_gdp_df_counterfactural <- weo_gdp_df_precovid %>%
+  mutate(fit=map( # do a linear regression to get pretrends
+    data,
+    ~lm(gdp_pcap ~ date, data=.x, na.action=na.exclude) 
+  )) %>%
+  left_join(weo_gdp_df_postcovid) %>%
+  mutate(covid_counterfactual= map2( #add predictions to post covid
+    .x=fit, .y=post_covid, ~augment(x=.x, newdata=.y) %>% as_tibble()
+  ) 
+  ) %>%
+  unnest(covid_counterfactual) %>%
+  select(-data, -fit) %>%
+  #bind_rows(weo_gdp_df_precovid %>% unnest(data)) %>%
+  arrange(iso3c, -date) %>%
+  mutate(.fitted=if_else(is.na(.fitted),gdp_pcap,.fitted))
+
+# plot this data for one country (India)
+
+```
+
+
+```{r counterfact, eval=FALSE, include=FALSE}
+
+#also grab the weo October 2019 data for comparison
+weo_gdp_oct19_df <- weo_oct19_df %>%
+  filter(`Subject Descriptor`=="Gross domestic product per capita, current prices" & Units =="U.S. dollars") %>%
+  pivot_longer(
+    cols=c(`2010`:`2024`),
+    names_to="date",
+    values_to="gdp_pcap_forcast19"
+  ) %>%
+  transmute(
+    iso3c=ISO,
+    date=as.numeric(date),
+    gdp_pcap_forcast19=as.numeric(str_remove_all(gdp_pcap_forcast19,",")),
+    metadata=`Subject Descriptor`,
+    units=Units
+  ) %>%
+  group_by(iso3c) %>%
+  mutate(share_missing=sum(as.numeric(is.na(gdp_pcap_forcast19)))/n()) %>%
+  filter(share_missing<0.7) %>%
+  group_by(iso3c) %>%
+  arrange(date) %>%
+  mutate(gdp_growth_forcast19=(gdp_pcap_forcast19)/lag(gdp_pcap_forcast19)) %>% #convert to growth
+  select(iso3c, date, gdp_growth_forcast19)
+
+
+#now add projections to latest WEO data to create gdp numbers projected before covid and after
+weo_gdp_df <- weo_df %>%
+  filter(`Subject Descriptor`=="Gross domestic product per capita, current prices" & Units =="U.S. dollars") %>%
+  pivot_longer(
+    cols=c(`2010`:`2026`),
+    names_to="date",
+    values_to="gdp_pcap"
+  ) %>%
+  transmute(
+    iso3c=ISO,
+    date=as.numeric(date),
+    gdp_pcap=as.numeric(str_remove_all(gdp_pcap,",")),
+    metadata=`Subject Descriptor`,
+    units=Units
+  ) %>%
+  group_by(iso3c) %>%
+  mutate(share_missing=sum(as.numeric(is.na(gdp_pcap)))/n()) %>%
+  filter(share_missing<0.7) %>%
+  left_join(weo_gdp_oct19_df) %>% #add in the october 2019 weo forcast for gdp
+  group_by(iso3c) %>%
+  arrange(date) %>%
+  fill(gdp_growth_forcast19) %>% #use estimate from 2024 as growth estimate for 2025 and 2026 based on oct 19 WEO
+  mutate(gdp_pcap_forcast19=if_else(date<2020, gdp_pcap, as.numeric(NA)), #sequentially build up the projections for each year
+         gdp_pcap_forcast19=if_else(date==2020, lag(gdp_pcap_forcast19)*gdp_growth_forcast19, gdp_pcap_forcast19),
+         gdp_pcap_forcast19=if_else(date==2021, lag(gdp_pcap_forcast19)*gdp_growth_forcast19, gdp_pcap_forcast19),
+         gdp_pcap_forcast19=if_else(date==2022, lag(gdp_pcap_forcast19)*gdp_growth_forcast19, gdp_pcap_forcast19),
+         gdp_pcap_forcast19=if_else(date==2023, lag(gdp_pcap_forcast19)*gdp_growth_forcast19, gdp_pcap_forcast19),
+         gdp_pcap_forcast19=if_else(date==2024, lag(gdp_pcap_forcast19)*gdp_growth_forcast19, gdp_pcap_forcast19 ),
+         gdp_pcap_forcast19=if_else(date==2025, lag(gdp_pcap_forcast19)*gdp_growth_forcast19, gdp_pcap_forcast19),
+         gdp_pcap_forcast19=if_else(date==2026, lag(gdp_pcap_forcast19)*gdp_growth_forcast19, gdp_pcap_forcast19)
+  ) %>%
+  left_join(wb_countries())
+
+
+
+```
+
+
+```{r gdp_change, eval=FALSE, include=FALSE}
+
+weo_gdp_change_df <- weo_df %>%
+  filter(`Subject Descriptor`=="Gross domestic product per capita, current prices" & Units =="U.S. dollars") %>%
+  mutate(across(c(`2010`:`2026`), ~str_remove_all(., ","))) %>%
+  mutate(across(c(`2010`:`2026`), as.numeric)) %>%
+  mutate(gdp_change_covid_2022=`2022`-`2019`,
+         gdp_change_covid_2021=`2021`-`2019`,
+         gdp_change_covid_2020=`2020`-`2019`,
+         net_output_lost=gdp_change_covid_2022 + gdp_change_covid_2021 + gdp_change_covid_2020,
+         net_output_lost_share2019=100*net_output_lost/`2019`) %>%
+  transmute(
+    iso3c=ISO,
+    gdp_2019=`2019`,
+    gdp_2020=`2020`,
+    gdp_2021=`2021`,
+    gdp_2022=`2022`,
+    gdp_change_covid_2020=gdp_change_covid_2020,
+    gdp_change_covid_2021=gdp_change_covid_2021,
+    gdp_change_covid_2022=gdp_change_covid_2022,
+    net_output_lost=net_output_lost,
+    net_output_lost_share2019=net_output_lost_share2019,
+    metadata=`Subject Descriptor`,
+    units=Units
+  ) %>%
+  group_by(iso3c) %>%
+  filter(!is.na(net_output_lost_share2019)) %>%
+  left_join(wb_countries())
+
+summary(weo_gdp_change_df$net_output_lost_share2019)
+```
+
+```{r map_output_lost, eval=FALSE, fig.height=, fig.width=11, include=FALSE}
+
+
+title <- "Cumulative GDP Lost from 2020-22 Compared to 2019 Level"
+
+  change_quantiles <- quantile(weo_gdp_change_df$net_output_lost_share2019, probs=c(1,2,3,4)/5,na.rm=T)
+  
+  map_df <- weo_gdp_change_df %>%
+    mutate(loss_groups=case_when(
+      between(net_output_lost_share2019, 5, Inf) ~ "Increased more than 5%",
+      between(net_output_lost_share2019, 0,5) ~ "Increased 0-5%",
+      between(net_output_lost_share2019, -5,0) ~ "Decreased 0-5%",
+      between(net_output_lost_share2019, -10,-5) ~ "Decreased 5-10%",
+      between(net_output_lost_share2019, -20,-10) ~ "Decreased 10-20%",
+      between(net_output_lost_share2019, -Inf,-20) ~ "Decreased more than 20%",
+      
+    )) %>%
+    mutate(loss_groups=factor(loss_groups, 
+                             levels=c("Increased more than 5%","Increased 0-5%","Decreased 0-5%","Decreased 5-10%","Decreased 10-20%","Decreased more than 20%" )))  
+
+  
+    #set color pallete
+  col_pal <- c("#002962","#407ba7","#ff002b","#c00021","#a0001c", "#800016")  
+  names(col_pal) <- c("Increased more than 5%","Increased 0-5%","Decreased 0-5%","Decreased 5-10%","Decreased 10-20%","Decreased more than 20%" )
+  
+  
+p1<-ggplot() +
+    geom_map(data = map_df, aes(map_id = iso3c, fill = loss_groups), map = maps$countries) + 
+    geom_polygon(data = maps$disputed, aes(long, lat, group = group, map_id = id), fill = "grey80") + 
+    geom_polygon(data = maps$lakes, aes(long, lat, group = group), fill = "white")  +
+    geom_path(data = maps$boundaries,
+              aes(long, lat, group = group),
+              color = "white",
+              size = 0.3,
+              lineend = maps$boundaries$lineend,
+              linetype = maps$boundaries$linetype) +
+    scale_x_continuous(expand = c(0, 0), limits = standard_crop_wintri()$xlim) +
+    scale_y_continuous(expand = c(0, 0), limits = standard_crop_wintri()$ylim) +
+    scale_fill_manual(
+      name='Change in GDP',
+      values=col_pal,
+      na.value='grey'
+    ) +
+    coord_equal() +
+    theme_map(base_size=12) +
+    theme(
+        legend.position='bottom'
+        ) +
+    labs(
+      title=str_wrap(title,100),
+      caption = 'Source: IMF World Economic Outlook'
+    )
+
+p1
+
+```

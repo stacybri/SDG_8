@@ -1,0 +1,273 @@
+---
+title: "SDG 8 Mockup"
+author: "Brian Stacy"
+date: "12/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	fig.width = 8,
+	out.width = 8
+)
+library(tidyverse)
+library(wbstats)
+library(povcalnetR)
+library(here)
+library(fixest)
+library(sandwich)
+library(zoo)
+library(plotly)
+
+dir <- here()
+
+databank_indicators <- wb_indicators()
+
+wdi_indicators <- databank_indicators %>% 
+  filter(source_id==2)
+
+```
+
+# SDG 8 
+
+## Main Story
+
+Start with a discussion of COVID impacts on GDP.  Can either pull data from WDI or from Global Economic Prospects or IMF.
+
+Could do a deep dive and discuss impacts on each indicator.
+ Interesting Candidates:
+ 
+  - Indicator 8.1.1: Annual growth rate of real GDP per capita
+
+  - Indicator 8.2.1: Annual growth rate of real GDP per employed person
+
+  - Indicator 8.3.1: Proportion of informal employment in total employment, by sector and sex
+
+  - Indicator 8.6.1: Proportion of youth (aged 15–24 years) not in education, employment or training
+
+  - Indicator 8.7.1: Proportion and number of children aged 5–17 years engaged in child labour, by sex and age
+
+  - Indicator 8.8.1: Fatal and non-fatal occupational injuries per 100,000 workers, by sex and migrant status
+
+  - Indicator 8.9.1: Tourism direct GDP as a proportion of total GDP and in growth rate
+
+## Cross Cutting Story
+
+Examine impacts of economic growth on inequality.  Look at spells of growth and impacts on inequality.
+
+Indicator 10.1.1: Growth rates of household expenditure or income per capita among the bottom 40 per cent of the population and the total population
+
+Indicator 10.2.1: Proportion of people living below 50 per cent of median income, by sex, age and persons with disabilities
+
+```{r gdpineq}
+
+#pull gdp and inequality data from the WDI
+
+cc_indicators <- c(
+  #'NY.GDP.MKTP.KD', #GDP (constant 2015 US$
+  #'NY.GDP.MKTP.KD.ZG', #GDP growth (annual %)
+  'NY.GDP.PCAP.KD',  #GDP per capita (constant 2015 US$)
+  'NY.GDP.PCAP.KD.ZG', #GDP per capita growth (annual %)
+ # 'NY.GNP.MKTP.KD', #GNI (constant 2015 US$)
+  #'NY.GNP.MKTP.KD.ZG', #GNI growth (annual %)
+  #'NY.GNP.PCAP.KD', #GNI per capita (constant 2015 US$)
+  #'NY.GNP.PCAP.KD.ZG', #GNI per capita growth (annual %)
+  'NY.GNP.PCAP.PP.KD', #GNI per capita, PPP (constant 2017 international $)
+  'SI.POV.GINI', #Gini index (World Bank estimate)
+  'SI.SPR.PC40', #Survey mean consumption or income per capita, bottom 40% of population (2011 PPP $ per day)
+  'SI.SPR.PC40.ZG' #Annualized average growth rate in per capita real survey mean consumption or income, bottom 40% of population (%)
+)
+
+cross_cut_df <- wb_data(
+  indicator = cc_indicators,
+  start_date=1995,
+  end_date=2019,
+  mrv=10,
+  gapfill = TRUE
+)
+
+cross_cut_df <- cross_cut_df %>%
+  left_join(wb_countries())
+
+```
+
+Compare Gini versus Log GDP
+
+```{r gini_loggdp, fig.height=10, fig.width=6 }
+
+library(WDI)
+
+#create a new data frame containing 5 year average of gdp and gini to eliminate volatility
+gini_gdp_df <- WDI(
+  indicator = c('NY.GNP.PCAP.PP.KD','SI.POV.GINI','SP.POP.TOTL'),
+  start=1980,
+  end=2019,
+  extra=TRUE
+  ) %>% 
+  dplyr::arrange(iso3c,-year) %>%
+  filter(region!="Aggregates") %>%
+  group_by(country, iso3c) %>%
+  fill(NY.GNP.PCAP.PP.KD, SI.POV.GINI, .direction="downup") %>%
+  mutate(
+    date=year,
+    gni_pcap_3yr=rollmean(NY.GNP.PCAP.PP.KD, 3, fill=NA, align='left'),
+    gni_pcap_5yr=rollmean(NY.GNP.PCAP.PP.KD, 5, fill=NA, align='left'),
+    gini_3yr=rollmean(SI.POV.GINI, 3, fill=NA, align='left'),
+    gini_5yr=rollmean(SI.POV.GINI, 5, fill=NA, align='left')
+  )
+  
+
+gini_gdp_df_1980 <- gini_gdp_df %>%
+  filter(date==1980)
+
+gini_gdp_df_2019 <- gini_gdp_df %>%
+  filter(date==2019)
+
+#create dataframe of changes from 2019 to 1980
+gni_pcap_change <- gini_gdp_df_2019$NY.GNP.PCAP.PP.KD - gini_gdp_df_1980$NY.GNP.PCAP.PP.KD
+gini_change <- gini_gdp_df_2019$SI.POV.GINI - gini_gdp_df_1980$SI.POV.GINI
+iso3c <- gini_gdp_df_2019$iso3c 
+country <- gini_gdp_df_2019$country 
+
+gini_gdp_df_chg <- data.frame(
+  country=country,
+  iso3c=iso3c,
+  region=gini_gdp_df_2019$region,
+  gni_pcap_change=gni_pcap_change,
+  gini_change=gini_change,
+  population_2019 = gini_gdp_df_2019$SP.POP.TOTL
+                              )
+ggplot(gini_gdp_df_2019, aes(x=gni_pcap_change, y=gini_change, color=region, size=SP.POP.TOTL)) +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0) +
+  geom_text(aes(label=iso3c)) +
+  geom_smooth() +
+  scale_x_continuous(labels=scales::comma) +
+  theme_bw() +
+  theme(legend.position = 'bottom') +
+  ggtitle("Change between GNI per capita and Gini coefficient for countries from 1980 to 2019.")
+
+
+ggplot(gini_gdp_df_2019, aes(x=gni_pcap_3yr, y=gini_3yr, color=region, size=SP.POP.TOTL)) +
+  geom_text(aes(label=iso3c)) +
+  geom_smooth() +
+  scale_x_log10(labels=scales::comma) +
+  theme_bw() +
+  ggtitle("Relationship between Log GNI per capita and Gini coefficient for countries based on 3 year moving average.")
+
+ggplot(gini_gdp_df_2019, aes(x=gni_pcap_5yr, y=gini_5yr, color=region, size=SP.POP.TOTL)) +
+  geom_text(aes(label=iso3c)) +
+  geom_smooth() +
+  scale_x_log10(labels=scales::comma) +
+  theme_bw() +
+  ggtitle("Relationship between Log GNI per capita and Gini coefficient for countries based on 5 year moving average.")
+
+ggplot(gini_gdp_df, aes(x=gni_pcap_5yr, y=gini_5yr, group=iso3c, color=region, size=SP.POP.TOTL)) +
+  geom_line(size=.5, alpha=0.2) +
+  geom_text(data=gini_gdp_df_2019, aes(label=iso3c)) +
+  #geom_point(data=gini_gdp_df_2019) +
+  scale_x_log10(labels=scales::comma) +
+  theme_bw() +
+  ggtitle("Relationship between Log GNI per capita and Gini coefficient for countries based on 5 year moving average.")
+
+
+#plotly plot over time
+
+fig <- plot_ly(data=gini_gdp_df, 
+               x= ~gni_pcap_5yr, y= ~gini_5yr,frame=~date,group=~country,text=~country,size=~SP.POP.TOTL,color=~region,
+               type='scatter',
+               mode='markers',
+               sizes = c(10, 80)
+               ) %>%
+  layout(xaxis=list(type="log",
+                    tickvals=c(1000,3000,6000,10000,30000,45000),
+                    tickformat='$,.0f')) %>%
+  animation_opts(
+    frame = 50, 
+    transition = 1, 
+    redraw = FALSE
+  )
+
+fig
+
+```
+
+
+Compare annualized GDP growth with annualized growth in per capita mean consumption or income for bottom 40%
+
+```{r}
+
+ggplot(
+  cross_cut_df,
+  aes(x=NY.GDP.PCAP.KD.ZG, y=SI.SPR.PC40.ZG)
+) +
+  geom_point() + 
+  geom_smooth()
+
+elasticity_gdp_bottom40 <- lm(SI.SPR.PC40.ZG ~ NY.GDP.PCAP.KD.ZG, data=cross_cut_df)
+
+sandwich(elasticity_gdp_bottom40)
+vcovHC(elasticity_gdp_bottom40, type = "HC3")
+
+summary(elasticity_gdp_bottom40)
+
+feols(SI.SPR.PC40.ZG ~ NY.GDP.PCAP.KD.ZG, data=cross_cut_df, se="hetero")
+
+```
+
+# Calculate change in GDP with change in GINI
+
+```{r}
+
+feols( SI.POV.GINI ~ NY.GNP.PCAP.PP.KD, cross_cut_df, vcov=~iso3c )
+
+feols(d(SI.POV.GINI) ~ d(NY.GNP.PCAP.PP.KD), cross_cut_df, panel.id=~iso3c+date, se='hetero' )
+
+feols( SI.POV.GINI ~ NY.GNP.PCAP.PP.KD | iso3c, cross_cut_df, se='cluster' )
+
+feols( SI.POV.GINI ~ i(income_level, NY.GNP.PCAP.PP.KD) | iso3c, cross_cut_df, se='cluster' )
+
+```
+
+## Annex
+
+
+DECENT WORK AND ECONOMIC GROWTH
+Promote sustained, inclusive and sustainable economic growth, full and productive employment and decent work for all
+
+Indicator 8.1.1: Annual growth rate of real GDP per capita
+
+Indicator 8.2.1: Annual growth rate of real GDP per employed person
+
+Indicator 8.3.1: Proportion of informal employment in total employment, by sector and sex
+
+Indicator 8.4.1: Material footprint, material footprint per capita, and material footprint per GDP
+
+Indicator 8.4.2: Domestic material consumption, domestic material consumption per capita, and domestic material consumption per GDP
+
+Indicator 8.5.1: Average hourly earnings of employees, by sex, age, occupation and persons with disabilities
+
+Indicator 8.5.2: Unemployment rate, by sex, age and persons with disabilities
+
+Indicator 8.6.1: Proportion of youth (aged 15–24 years) not in education, employment or training
+
+Indicator 8.7.1: Proportion and number of children aged 5–17 years engaged in child labour, by sex and age
+
+Indicator 8.8.1: Fatal and non-fatal occupational injuries per 100,000 workers, by sex and migrant status
+
+Indicator 8.8.2: Level of national compliance with labour rights (freedom of association and collective bargaining) based on International Labour Organization (ILO) textual sources and national legislation, by sex and migrant status
+
+Indicator 8.9.1: Tourism direct GDP as a proportion of total GDP and in growth rate
+
+Indicator 8.10.1: (a) Number of commercial bank branches per 100,000 adults and (b) number of automated teller machines (ATMs) per 100,000 adults
+
+Indicator 8.10.2: Proportion of adults (15 years and older) with an account at a bank or other financial institution or with a mobile-money-service provider
+
+Indicator 8.a.1: Aid for Trade commitments and disbursements
+
+Indicator 8.b.1: Existence of a developed and operationalized national strategy for youth employment, as a distinct strategy or as part of a national employment strategy
+
+
