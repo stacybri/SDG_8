@@ -194,7 +194,7 @@ covid_counterfactual_plotter <- function( iso) {
     xlab('Year') +
     ylab('GDP per capita, current prices (U.S. dollars)') +
     labs(title=paste0("COVID impacts on GDP per capita for ", country),
-         caption='Data from World Bank Global Economic Prospects (GEP).  Red line shows projections based on the January 2029 GEP.')
+         caption='Data from World Bank Global Economic Prospects (GEP).  Red line shows projections based on the January 2020 GEP.')
   
   p
 }
